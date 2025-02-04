@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gallery</title>
+</head>
+<body>
+    <h1>Image Gallery</h1>
+    {% if images %}
+        <ul>
+        {% for image in images %}
+            <li>
+                <img src="{{ image }}" alt="Uploaded Image" style="max-width: 200px;">
+                <form action="{{ url_for('delete_file', filename=image.split('/')[-1]) }}" method="post">
+                    <button type="submit">Delete</button>
+                </form>
+            </li>
+        {% endfor %}
+        </ul>
+    {% else %}
+        <p>No images uploaded yet.</p>
+    {% endif %}
+    <a href="/">Home</a>
+</body>
+</html>
