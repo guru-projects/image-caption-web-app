@@ -36,7 +36,8 @@ st.title("Image Captioning Web Application")
 
 # Sidebar for navigation
 st.sidebar.title("Navigation")
-options = st.sidebar.radio(["🏠 Home", "🖼️ Gallery", "📊 Statistics", "💬 Feedback"])
+options = st.sidebar.radio("Choose an option:", ["🏠 Home", "🖼️ Gallery", "📊 Statistics", "💬 Feedback"])
+
 
 if options == "Home":
     st.header("Upload an Image")
