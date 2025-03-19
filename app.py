@@ -1,93 +1,127 @@
 import streamlit as st
 import os
-from PIL import Image
-import datetime
-from werkzeug.utils import secure_filename
-import torch
-from transformers import BlipProcessor, BlipForConditionalGeneration
+from config.config import UPLOAD_FOLDER
+from utils.file_utils import allowed_file, get_file_size_kb
+from utils.ui_components import display_caption, display_feedback
+from services.caption_service import process_image_upload
+from services.feedback_service import submit_feedback, get_all_feedback
+from database.db_handler import load_metadata, remove_image_metadata
+import pandas as pd
 
-# Define the upload folder and allowed extensions
-UPLOAD_FOLDER = "static/uploads"
-ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg"}
+# Setup folders
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Load BLIP model and processor
-processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-large")
-model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-large")
+st.title("🖼️ Image Captioning Web Application")
 
-def generate_caption(image_path):
-    """Generate a caption for the given image using BLIP with increased length."""
-    image = Image.open(image_path).convert("RGB")
-    inputs = processor(images=image, return_tensors="pt")
-    
-    # Generate caption with increased max_length and beam search
-    out = model.generate(**inputs, max_length=50)
-    
-    # Decode and return the caption
-    caption = processor.decode(out[0], skip_special_tokens=True)
-    return caption
-
-def allowed_file(filename):
-    """Check if the uploaded file is allowed."""
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
-# Streamlit app
-st.title("Image Captioning Web Application")
-
-# Sidebar for navigation
+# Sidebar navigation
 st.sidebar.title("Navigation")
-options = st.sidebar.radio("Choose an option:", ["🏠 Home", "🖼️ Gallery", "📊 Statistics", "💬 Feedback"])
+tabs = ["Home", "Gallery", "Statistics", "Feedback"]
+icons = ["🏠", "🖼️", "📊", "💬"]
 
+if "page" not in st.session_state:
+    st.session_state.page = "Home"
 
-if options == "Home":
+for i, tab in enumerate(tabs):
+    if st.sidebar.button(f"{icons[i]} {tab}", key=tab):
+        st.session_state.page = tab
+
+# Home Page
+if st.session_state.page == "Home":
     st.header("Upload an Image")
     uploaded_file = st.file_uploader("Choose an image...", type=["png", "jpg", "jpeg"])
-    
+
     if uploaded_file is not None:
         if allowed_file(uploaded_file.name):
-            filename = secure_filename(uploaded_file.name)
-            file_path = os.path.join(UPLOAD_FOLDER, filename)
-            with open(file_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            
-            st.image(file_path, caption="Uploaded Image", use_container_width=True, width=600)
-            
-            caption = generate_caption(file_path)
-            upload_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            st.subheader("**Caption:**", caption)
-            st.write("**Upload Time:**", upload_time)
-        else:
-            st.error("File type not allowed. Please upload a PNG, JPG, or JPEG file.")
+            filename, file_path, caption, upload_time = process_image_upload(uploaded_file)
 
-elif options == "Gallery":
-    st.header("Image Gallery")
+            st.image(file_path, caption="Uploaded Image", use_container_width=True, width=600)
+            display_caption(caption, upload_time)
+        else:
+            st.error("Invalid file type.")
+
+# Gallery Page
+elif st.session_state.page == "Gallery":
+    st.header("🖼️ Image Gallery")
+    metadata = load_metadata()
     image_files = [f for f in os.listdir(UPLOAD_FOLDER) if allowed_file(f)]
-    
+
     if image_files:
         for image_file in image_files:
             image_path = os.path.join(UPLOAD_FOLDER, image_file)
-            st.image(image_path, caption=image_file, use_container_width=True,width=600)
-            
-            if st.button(f"Delete {image_file}"):
-                os.remove(image_path)
-                st.success(f"Deleted {image_file}")
-                st.experimental_rerun()
-    else:
-        st.write("No images uploaded yet.")
+            image_data = metadata.get(image_file, {})
+            caption = image_data.get("caption", "No caption available")
+            upload_time = image_data.get("upload_time", "Unknown upload time")
 
-elif options == "Statistics":
-    st.header("Application Statistics")
-    total_files = len([f for f in os.listdir(UPLOAD_FOLDER) if allowed_file(f)])
+            col1, col2 = st.columns([1, 2])
+
+            with col1:
+                st.image(image_path, caption=image_file, use_container_width=True)
+
+            with col2:
+                st.markdown(
+                    f"""
+                    <div style="padding:15px; border-radius:10px; border: 1px solid #ccc; margin-bottom:15px">
+                        <h4 style="color:#4CAF50;">📝 Caption:</h4>
+                        <p style="font-size:18px; color:#ccc;"><strong>{caption}</strong></p>
+                        <p style="color:gray; font-size:12px;">Uploaded at: {upload_time}</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+                if st.button(f"🗑️ Delete {image_file}", key=f"delete_{image_file}"):
+                    os.remove(image_path)
+                    remove_image_metadata(image_file)
+                    st.success(f"Deleted {image_file}")
+                    st.rerun()
+    else:
+        st.info("No images uploaded yet.")
+
+# Statistics Page
+elif st.session_state.page == "Statistics":
+    st.header("📊 Application Statistics")
+    metadata = load_metadata()
+    total_files = len(metadata)
+
     st.write(f"**Total Uploaded Images:** {total_files}")
 
-elif options == "Feedback":
-    st.header("User Feedback")
-    user_feedback = st.text_area("Please provide your feedback here:")
-    
+    if total_files > 0:
+        df_data = []
+        for filename, data in metadata.items():
+            file_path = os.path.join(UPLOAD_FOLDER, filename)
+            if os.path.exists(file_path):
+                df_data.append({
+                    "Filename": filename,
+                    "Upload Time": data.get("upload_time", "N/A"),
+                    "File Size": f"{get_file_size_kb(file_path)} KB",
+                    "Caption": data.get("caption", "N/A")
+                })
+
+        df = pd.DataFrame(df_data)
+        st.dataframe(df)
+    else:
+        st.info("No statistics to show.")
+
+# Feedback Page
+elif st.session_state.page == "Feedback":
+    st.header("💬 User Feedback")
+
+    name = st.text_input("Your Name")
+    feedback = st.text_area("Your Feedback")
+
     if st.button("Submit Feedback"):
-        feedback_file = os.path.join('static', 'feedback.txt')
-        with open(feedback_file, 'a') as f:
-            f.write(user_feedback + '\n')
-        st.success("Thank you for your feedback!")
-        st.balloons()
+        if name.strip() == "" or feedback.strip() == "":
+            st.warning("Fill both fields.")
+        else:
+            submit_feedback(name, feedback)
+            st.success("Feedback submitted!")
+            st.balloons()
+
+    st.subheader("📋 Previous Feedback")
+    feedback_entries = get_all_feedback()
+
+    if feedback_entries:
+        for entry in feedback_entries:
+            display_feedback(entry)
+    else:
+        st.info("No feedback submitted yet.")
